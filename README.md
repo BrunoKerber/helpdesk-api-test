@@ -15,21 +15,35 @@ Testes automatizados de API REST para os endpoints `/users` e `/tickets`, para u
 ## Estrutura de Pastas
 
 ```
-.
-├── .github/workflows/ci.yml     # pipeline de CI
-├── cypress/                      # configuração e testes
-│   ├── e2e/                      # testes (*.cy.js)
-│   ├── fixtures/                 # dados de teste
-│   └── support/                  # comandos e utilitários
-├── reports/                      # relatórios gerados
-│   └── cypress/                  # saída do Mochawesome
-│       ├── assets/               # recursos (imagens, CSS)
-│       └── *.html                # relatórios HTML
-├── cypress.config.js             # configuração do Cypress
-├── package.json                  # dependências e scripts
-├── package-lock.json             # lockfile das dependências
-├── .gitignore                    # arquivos ignorados pelo Git
-└── README.md                     # documentação principal
+.github/
+└── workflows/
+    └── ci.yml                # pipeline de CI
+
+cypress/
+├── e2e/                      # testes (*.cy.js)
+│   ├── tickets.cy.js
+│   └── users.cy.js
+├── fixtures/                 
+│   └── example.json
+└── support/
+    ├── commands.js           # custom commands do Cypress
+    ├── e2e.js                # hooks globais
+    └── utils/                # funções auxiliares
+        ├── validators.js
+        ├── faker.js
+        └── ...
+
+reports/                       # gerado pelo script de relatório
+└── cypress/
+    ├── assets/               
+    └── *.html                # relatórios Mochawesome
+
+cypress.config.js             # configuração do Cypress
+package.json                  # dependências e scripts
+package-lock.json             # lockfile
+.gitignore                    # o que não vai para o Git
+README.md                     # documentação principal
+
 ```
 
 ## Instalação e Execução
@@ -98,21 +112,104 @@ on:
   push:
     branches: ["main"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  test:
+  cypress-tests:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      # 1) Checkout deste repositório de testes
+      - name: Checkout Tests
+        uses: actions/checkout@v3
         with:
-          node-version: '20.19.3'
-      - run: npm ci
-      - run: npm run test:cypress
-      - uses: actions/upload-artifact@v3
+          fetch-depth: 0
+
+      # 2) Clone o servidor Helpdesk API
+      - name: Clone API Server
+        run: git clone https://github.com/automacaohml/helpdesk-api.git server
+
+      # 3) Cache de dependências do servidor
+      - name: Cache server dependencies
+        uses: actions/cache@v3
+        with:
+          path: server/node_modules
+          key: server-deps-${{ hashFiles('server/package-lock.json') }}
+          restore-keys: server-deps-
+
+      # 4) Cache de dependências dos testes
+      - name: Cache test dependencies
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: test-deps-${{ hashFiles('package-lock.json') }}
+          restore-keys: test-deps-
+
+      # 5) Setup Node.js (Node 22 para atender mochawesome-merge)
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 22.x
+
+      # 6-8) Instalar deps, iniciar API e rodar Cypress
+      - name: Install deps, start API and run Cypress
+        env:
+          TERM: xterm
+        run: |
+          # ----- dependências dos testes (raiz) -----
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+          # ----- dependências do servidor -----
+          if [ -f server/package-lock.json ]; then
+            (cd server && npm ci)
+          else
+            (cd server && npm install)
+          fi
+
+          # ----- inicia API em segundo plano -----
+          (cd server && node server.js &)   
+
+          # ----- espera a porta 3000 abrir -----
+          npx wait-on tcp:3000 --timeout 60000
+
+          # ----- executa Cypress -----
+          npm run test:cypress
+
+      # 9) Upload do relatório HTML
+      - name: Upload HTML Report
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: cypress-html-report
           path: reports/cypress/*.html
 ```
 
-## Pontos de Atenção
+## Observações
+- Foi criado no projeto o arquivo ci.yml que configura pipeline no github actions, que ao realizar o commit será
+realizada a execução dos testes. As falhas nos testes não indicam problemas na automação, mas sim pontos em que 
+necessitam de correção, ou o comportamento não é o esperado a nível de negócio.
+
+
+## Pontos de Melhoria
+- Adicionar autenticação para chamar os serviços.
+- Ajustar os serviços considerando mensagens mais apropriadas e status code corretos.
+- Ajustar os serviços receberem somente os dados corretos, pois aceita nome inválido, email inválido e afins.
+- Cuidar, pois os serviços estão passíveis de SQL Injection;
+- Existem cenários em que se duplica ID. Que no caso é no serviço /users que quando excluimos(DEL) um user, ao
+ inserir um user novo (POST), é gerada a duplicidade de ID retornada no (GET).
+- Ajustar serviços a fim de evitar duplicidades que está sendo possível. Tanto de users, quanto de tickets.
+- Serviço de tickets poderiam possuir um título.
+- Serviço de tickets permite inserir qualquer status.
+- Adicionar filtros e paginação nos serviços, pois dependendo da quantidade de registros, pode se ter problema
+de performance.
+
+
+
+
+
+## Próximos Passos
+- Implementação de page-object no projeto que trará uma melhora significativa para o projeto.
