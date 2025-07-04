@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  cypress-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1) Checkout deste repositório de testes
+      - name: Checkout Tests
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # 2) Clone o servidor Helpdesk API
+      - name: Clone API Server
+        run: git clone https://github.com/automacaohml/helpdesk-api.git server
+
+      # 3) Cache de dependências do servidor
+      - name: Cache server dependencies
+        uses: actions/cache@v3
+        with:
+          path: server/node_modules
+          key: server-deps-${{ hashFiles('server/package-lock.json') }}
+          restore-keys: server-deps-
+
+      # 4) Cache de dependências dos testes
+      - name: Cache test dependencies
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: test-deps-${{ hashFiles('package-lock.json') }}
+          restore-keys: test-deps-
+
+      # 5) Setup Node.js (Node 22 para atender mochawesome-merge)
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 22.x
+
+      # 6-8) Instalar deps, iniciar API e rodar Cypress
+      - name: Install deps, start API and run Cypress
+        env:
+          TERM: xterm
+        run: |
+          # ----- dependências dos testes (raiz) -----
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+          # ----- dependências do servidor -----
+          if [ -f server/package-lock.json ]; then
+            (cd server && npm ci)
+          else
+            (cd server && npm install)
+          fi
+
+          # ----- inicia API em segundo plano -----
+          (cd server && node server.js &)   
+
+          # ----- espera a porta 3000 abrir -----
+          npx wait-on tcp:3000 --timeout 60000
+
+          # ----- executa Cypress -----
+          npm run test:cypress
+
+      # 9) Upload do relatório HTML
+      - name: Upload HTML Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-html-report
+          path: reports/cypress/*.html
